@@ -497,9 +497,10 @@ namespace OpcPublisher
                     foreach (var subscription in subscriptionsToCleanup)
                     {
                         // loop through all monitored items
-                        var monitoredItemsToCleanup = subscription.OpcMonitoredItems;
-                        foreach (var monitoredItem in monitoredItemsToCleanup)
+                        var monitoredItemsToCleanup = subscription.OpcMonitoredItems.ToArray();
+                        for (var i = 0; i < monitoredItemsToCleanup.Length; i++)
                         {
+                            var monitoredItem = monitoredItemsToCleanup[i];
                             if (monitoredItem.ConfigType == OpcMonitoredItemConfigurationType.NodeId)
                             {
                                 await session.RequestMonitorItemRemovalAsync(monitoredItem.ConfigNodeId, null, ShutdownTokenSource.Token);
