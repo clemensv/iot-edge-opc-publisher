@@ -17,17 +17,6 @@ namespace OpcPublisher
     using System.IO;
     using System.Text;
     using System.Text.RegularExpressions;
-    using static HubCommunicationBase;
-    using static IotEdgeHubCommunication;
-    using static IotHubCommunication;
-    using static Opc.Ua.CertificateStoreType;
-    using static OpcApplicationConfiguration;
-    using static OpcMonitoredItem;
-    using static OpcSession;
-    using static PublisherDiagnostics;
-    using static PublisherNodeConfiguration;
-    using static PublisherTelemetryConfiguration;
-    using static System.Console;
     using System.ComponentModel;
 
     public sealed class Program
@@ -111,28 +100,31 @@ namespace OpcPublisher
             try
             {
                 var shouldShowHelp = false;
-                string opcStatusCodesToSuppress = SuppressedOpcStatusCodesDefault;
+                string opcStatusCodesToSuppress = OpcMonitoredItem.SuppressedOpcStatusCodesDefault;
 
                 // detect the runtime environment. either we run standalone (native or containerized) or as IoT Edge module (containerized)
                 // check if we have an environment variable containing an IoT Edge connectionstring, we run as IoT Edge module
-                if (IsIotEdgeModule)
+                if (IotEdgeHubCommunication.IsIotEdgeModule)
                 {
-                    WriteLine("IoTEdge detected.");
+                    Console.WriteLine("IoTEdge detected.");
                 }
 
                 // command line options
                 Mono.Options.OptionSet options = new Mono.Options.OptionSet {
 
 
-                        // Publisher configuration options
-                        { "pf|publishfile=", $"the filename to configure the nodes to publish.\nDefault: '{PublisherNodeConfigurationFilename}'", (string p) => PublisherNodeConfigurationFilename = p },
-                        { "tc|telemetryconfigfile=", $"the filename to configure the ingested telemetry\nDefault: '{PublisherTelemetryConfigurationFilename}'", (string p) => PublisherTelemetryConfigurationFilename = p },
+                    // Publisher configuration options
+                        { "qt|amqptarget=", $"AMQP Target Uri.", (String p) => AmqpTelemetryCommunication.AmqpTarget = new Uri(p) },
+                        { "qu|amqpuser=", $"AMQP user.", (String p) => AmqpTelemetryCommunication.SaslUser = p },
+                        { "qp|amqppassword=", $"AMQP password.", (String p) => AmqpTelemetryCommunication.SaslPassword = p },
+                        { "pf|publishfile=", $"the filename to configure the nodes to publish.\nDefault: '{PublisherNodeConfiguration.PublisherNodeConfigurationFilename}'", (string p) => PublisherNodeConfiguration.PublisherNodeConfigurationFilename = p },
+                        { "tc|telemetryconfigfile=", $"the filename to configure the ingested telemetry\nDefault: '{PublisherTelemetryConfiguration.PublisherTelemetryConfigurationFilename}'", (string p) => PublisherTelemetryConfiguration.PublisherTelemetryConfigurationFilename = p },
                         { "s|site=", $"the site OPC Publisher is working in. if specified this domain is appended (delimited by a ':' to the 'ApplicationURI' property when telemetry is sent to IoTHub.\n" +
                                 "The value must follow the syntactical rules of a DNS hostname.\nDefault: not set", (string s) => {
                                 Regex siteNameRegex = new Regex("^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]*[a-zA-Z0-9])\\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\\-]*[A-Za-z0-9])$");
                                 if (siteNameRegex.IsMatch(s))
                                 {
-                                    PublisherSite = s;
+                                    OpcSession.PublisherSite = s;
                                 }
                                 else
                                 {
@@ -140,11 +132,11 @@ namespace OpcPublisher
                                 }
                             }
                          },
-                        { "ic|iotcentral", $"publisher will send OPC UA data in IoTCentral compatible format (DisplayName of a node is used as key, this key is the Field name in IoTCentral). you need to ensure that all DisplayName's are unique. (Auto enables fetch display name)\nDefault: {IotCentralMode}", b => IotCentralMode = FetchOpcNodeDisplayName = b != null },
-                        { "sw|sessionconnectwait=", $"specify the wait time in seconds publisher is trying to connect to disconnected endpoints and starts monitoring unmonitored items\nMin: 10\nDefault: {SessionConnectWaitSec}", (int i) => {
+                        { "ic|iotcentral", $"publisher will send OPC UA data in IoTCentral compatible format (DisplayName of a node is used as key, this key is the Field name in IoTCentral). you need to ensure that all DisplayName's are unique. (Auto enables fetch display name)\nDefault: {HubCommunicationBase.IotCentralMode}", b => HubCommunicationBase.IotCentralMode = OpcSession.FetchOpcNodeDisplayName = b != null },
+                        { "sw|sessionconnectwait=", $"specify the wait time in seconds publisher is trying to connect to disconnected endpoints and starts monitoring unmonitored items\nMin: 10\nDefault: {OpcSession.SessionConnectWaitSec}", (int i) => {
                                 if (i > 10)
                                 {
-                                    SessionConnectWaitSec = i;
+                                    OpcSession.SessionConnectWaitSec = i;
                                 }
                                 else
                                 {
@@ -152,10 +144,10 @@ namespace OpcPublisher
                                 }
                             }
                         },
-                        { "mq|monitoreditemqueuecapacity=", $"specify how many notifications of monitored items can be stored in the internal queue, if the data can not be sent quick enough to IoTHub\nMin: 1024\nDefault: {MonitoredItemsQueueCapacity}", (int i) => {
+                        { "mq|monitoreditemqueuecapacity=", $"specify how many notifications of monitored items can be stored in the internal queue, if the data can not be sent quick enough to IoTHub\nMin: 1024\nDefault: {HubCommunicationBase.MonitoredItemsQueueCapacity}", (int i) => {
                                 if (i >= 1024)
                                 {
-                                    MonitoredItemsQueueCapacity = i;
+                                    HubCommunicationBase.MonitoredItemsQueueCapacity = i;
                                 }
                                 else
                                 {
@@ -163,7 +155,7 @@ namespace OpcPublisher
                                 }
                             }
                         },
-                        { "di|diagnosticsinterval=", $"shows publisher diagnostic info at the specified interval in seconds (need log level info).\n-1 disables remote diagnostic log and diagnostic output\n0 disables diagnostic output\nDefault: {DiagnosticsInterval}", (int i) => DiagnosticsInterval = i },
+                        { "di|diagnosticsinterval=", $"shows publisher diagnostic info at the specified interval in seconds (need log level info).\n-1 disables remote diagnostic log and diagnostic output\n0 disables diagnostic output\nDefault: {PublisherDiagnostics.DiagnosticsInterval}", (int i) => PublisherDiagnostics.DiagnosticsInterval = i },
 
                         { "ns|noshutdown=", $"same as runforever.\nDefault: {_noShutdown}", (bool b) => _noShutdown = b },
                         { "rf|runforever", $"publisher can not be stopped by pressing a key on the console, but will run forever.\nDefault: {_noShutdown}", b => _noShutdown = b != null },
@@ -197,26 +189,26 @@ namespace OpcPublisher
 
 
                         // IoTHub specific options
-                        { "ih|iothubprotocol=", $"{(IsIotEdgeModule ? "not supported when running as IoT Edge module\n" : $"the protocol to use for communication with Azure IoTHub (allowed values: {_hubProtocols}).\nDefault: {Enum.GetName(IotHubProtocol.GetType(), IotHubProtocol)}")}",
+                        { "ih|iothubprotocol=", $"{(IotEdgeHubCommunication.IsIotEdgeModule ? "not supported when running as IoT Edge module\n" : $"the protocol to use for communication with Azure IoTHub (allowed values: {_hubProtocols}).\nDefault: {Enum.GetName(IotHubCommunication.IotHubProtocol.GetType(), IotHubCommunication.IotHubProtocol)}")}",
                             (TransportType p) => {
-                                if (IsIotEdgeModule)
+                                if (IotEdgeHubCommunication.IsIotEdgeModule)
                                 {
                                     if (p != TransportType.Mqtt_Tcp_Only)
                                     {
-                                        WriteLine("When running as IoTEdge module Mqtt_Tcp_Only is enforced.");
-                                        IotEdgeHubProtocol = TransportType.Mqtt_Tcp_Only;
+                                        Console.WriteLine("When running as IoTEdge module Mqtt_Tcp_Only is enforced.");
+                                        IotEdgeHubCommunication.IotEdgeHubProtocol = TransportType.Mqtt_Tcp_Only;
                                     }
                                 }
                                 else
                                 {
-                                    IotHubProtocol = p;
+                                    IotHubCommunication.IotHubProtocol = p;
                                 }
                             }
                         },
-                        { "ms|iothubmessagesize=", $"the max size of a message which can be send to IoTHub. when telemetry of this size is available it will be sent.\n0 will enforce immediate send when telemetry is available\nMin: 0\nMax: {HubMessageSizeMax}\nDefault: {HubMessageSize}", (uint u) => {
-                                if (u >= 0 && u <= HubMessageSizeMax)
+                        { "ms|iothubmessagesize=", $"the max size of a message which can be send to IoTHub. when telemetry of this size is available it will be sent.\n0 will enforce immediate send when telemetry is available\nMin: 0\nMax: {HubCommunicationBase.HubMessageSizeMax}\nDefault: {HubCommunicationBase.HubMessageSize}", (uint u) => {
+                                if (u >= 0 && u <= HubCommunicationBase.HubMessageSizeMax)
                                 {
-                                    HubMessageSize = u;
+                                    HubCommunicationBase.HubMessageSize = u;
                                 }
                                 else
                                 {
@@ -224,10 +216,10 @@ namespace OpcPublisher
                                 }
                             }
                         },
-                        { "si|iothubsendinterval=", $"the interval in seconds when telemetry should be send to IoTHub. If 0, then only the iothubmessagesize parameter controls when telemetry is sent.\nDefault: '{DefaultSendIntervalSeconds}'", (int i) => {
+                        { "si|iothubsendinterval=", $"the interval in seconds when telemetry should be send to IoTHub. If 0, then only the iothubmessagesize parameter controls when telemetry is sent.\nDefault: '{HubCommunicationBase.DefaultSendIntervalSeconds}'", (int i) => {
                                 if (i >= 0)
                                 {
-                                    DefaultSendIntervalSeconds = i;
+                                    HubCommunicationBase.DefaultSendIntervalSeconds = i;
                                 }
                                 else
                                 {
@@ -236,19 +228,19 @@ namespace OpcPublisher
                             }
                         },
 
-                        { "dc|deviceconnectionstring=", $"{(IsIotEdgeModule ? "not supported when running as IoTEdge module\n" : $"if publisher is not able to register itself with IoTHub, you can create a device with name <applicationname> manually and pass in the connectionstring of this device.\nDefault: none")}",
-                            (string dc) => DeviceConnectionString = (IsIotEdgeModule ? null : dc)
+                        { "dc|deviceconnectionstring=", $"{(IotEdgeHubCommunication.IsIotEdgeModule ? "not supported when running as IoTEdge module\n" : $"if publisher is not able to register itself with IoTHub, you can create a device with name <applicationname> manually and pass in the connectionstring of this device.\nDefault: none")}",
+                            (string dc) => IotHubCommunication.DeviceConnectionString = (IotEdgeHubCommunication.IsIotEdgeModule ? null : dc)
                         },
                         { "c|connectionstring=", $"the IoTHub owner connectionstring.\nDefault: none",
-                            (string cs) => IotHubOwnerConnectionString = cs
+                            (string cs) => IotHubCommunication.IotHubOwnerConnectionString = cs
                         },
 
                         { "hb|heartbeatinterval=", "the publisher is using this as default value in seconds for the heartbeat interval setting of nodes without\n" +
                             "a heartbeat interval setting.\n" +
-                            $"Default: {HeartbeatIntervalDefault}", (int i) => {
-                                if (i >= 0 && i <= HeartbeatIntvervalMax)
+                            $"Default: {OpcMonitoredItem.HeartbeatIntervalDefault}", (int i) => {
+                                if (i >= 0 && i <= OpcMonitoredItem.HeartbeatIntvervalMax)
                                 {
-                                    HeartbeatIntervalDefault = i;
+                                    OpcMonitoredItem.HeartbeatIntervalDefault = i;
                                 }
                                 else
                                 {
@@ -258,17 +250,17 @@ namespace OpcPublisher
                         },
                         { "sf|skipfirstevent=", "the publisher is using this as default value for the skip first event setting of nodes without\n" +
                             "a skip first event setting.\n" +
-                            $"Default: {SkipFirstDefault}", (bool b) => { SkipFirstDefault = b; }
+                            $"Default: {OpcMonitoredItem.SkipFirstDefault}", (bool b) => { OpcMonitoredItem.SkipFirstDefault = b; }
                         },
 
 
                         // opc configuration options
-                        { "pn|portnum=", $"the server port of the publisher OPC server endpoint.\nDefault: {ServerPort}", (ushort p) => ServerPort = p },
-                        { "pa|path=", $"the enpoint URL path part of the publisher OPC server endpoint.\nDefault: '{ServerPath}'", (string a) => ServerPath = a },
-                        { "lr|ldsreginterval=", $"the LDS(-ME) registration interval in ms. If 0, then the registration is disabled.\nDefault: {LdsRegistrationInterval}", (int i) => {
+                        { "pn|portnum=", $"the server port of the publisher OPC server endpoint.\nDefault: {OpcApplicationConfiguration.ServerPort}", (ushort p) => OpcApplicationConfiguration.ServerPort = p },
+                        { "pa|path=", $"the enpoint URL path part of the publisher OPC server endpoint.\nDefault: '{OpcApplicationConfiguration.ServerPath}'", (string a) => OpcApplicationConfiguration.ServerPath = a },
+                        { "lr|ldsreginterval=", $"the LDS(-ME) registration interval in ms. If 0, then the registration is disabled.\nDefault: {OpcApplicationConfiguration.LdsRegistrationInterval}", (int i) => {
                                 if (i >= 0)
                                 {
-                                    LdsRegistrationInterval = i;
+                                    OpcApplicationConfiguration.LdsRegistrationInterval = i;
                                 }
                                 else
                                 {
@@ -276,10 +268,10 @@ namespace OpcPublisher
                                 }
                             }
                         },
-                        { "ol|opcmaxstringlen=", $"the max length of a string opc can transmit/receive.\nDefault: {OpcMaxStringLength}", (int i) => {
+                        { "ol|opcmaxstringlen=", $"the max length of a string opc can transmit/receive.\nDefault: {OpcApplicationConfiguration.OpcMaxStringLength}", (int i) => {
                                 if (i > 0)
                                 {
-                                    OpcMaxStringLength = i;
+                                    OpcApplicationConfiguration.OpcMaxStringLength = i;
                                 }
                                 else
                                 {
@@ -287,10 +279,10 @@ namespace OpcPublisher
                                 }
                             }
                         },
-                        { "ot|operationtimeout=", $"the operation timeout of the publisher OPC UA client in ms.\nDefault: {OpcOperationTimeout}", (int i) => {
+                        { "ot|operationtimeout=", $"the operation timeout of the publisher OPC UA client in ms.\nDefault: {OpcApplicationConfiguration.OpcOperationTimeout}", (int i) => {
                                 if (i >= 0)
                                 {
-                                    OpcOperationTimeout = i;
+                                    OpcApplicationConfiguration.OpcOperationTimeout = i;
                                 }
                                 else
                                 {
@@ -302,32 +294,32 @@ namespace OpcPublisher
                             "this value might be revised by the OPC UA servers to a supported sampling interval.\n" +
                             "please check the OPC UA specification for details how this is handled by the OPC UA stack.\n" +
                             "a negative value will set the sampling interval to the publishing interval of the subscription this node is on.\n" +
-                            $"0 will configure the OPC UA server to sample in the highest possible resolution and should be taken with care.\nDefault: {OpcSamplingInterval}", (int i) => OpcSamplingInterval = i
+                            $"0 will configure the OPC UA server to sample in the highest possible resolution and should be taken with care.\nDefault: {OpcApplicationConfiguration.OpcSamplingInterval}", (int i) => OpcApplicationConfiguration.OpcSamplingInterval = i
                         },
                         { "op|opcpublishinginterval=", "the publisher is using this as default value in milliseconds for the publishing interval setting of the subscriptions established to the OPC UA servers.\n" +
                             "please check the OPC UA specification for details how this is handled by the OPC UA stack.\n" +
-                            $"a value less than or equal zero will let the server revise the publishing interval.\nDefault: {OpcPublishingInterval}", (int i) => {
-                                if (i > 0 && i >= OpcSamplingInterval)
+                            $"a value less than or equal zero will let the server revise the publishing interval.\nDefault: {OpcApplicationConfiguration.OpcPublishingInterval}", (int i) => {
+                                if (i > 0 && i >= OpcApplicationConfiguration.OpcSamplingInterval)
                                 {
-                                    OpcPublishingInterval = i;
+                                    OpcApplicationConfiguration.OpcPublishingInterval = i;
                                 }
                                 else
                                 {
                                     if (i <= 0)
                                     {
-                                        OpcPublishingInterval = 0;
+                                        OpcApplicationConfiguration.OpcPublishingInterval = 0;
                                     }
                                     else
                                     {
-                                        throw new OptionException($"The opcpublishinterval ({i}) must be larger than the opcsamplinginterval ({OpcSamplingInterval}).", "opcpublishinterval");
+                                        throw new OptionException($"The opcpublishinterval ({i}) must be larger than the opcsamplinginterval ({OpcApplicationConfiguration.OpcSamplingInterval}).", "opcpublishinterval");
                                     }
                                 }
                             }
                         },
-                        { "ct|createsessiontimeout=", $"specify the timeout in seconds used when creating a session to an endpoint. On unsuccessful connection attemps a backoff up to {OpcSessionCreationBackoffMax} times the specified timeout value is used.\nMin: 1\nDefault: {OpcSessionCreationTimeout}", (uint u) => {
+                        { "ct|createsessiontimeout=", $"specify the timeout in seconds used when creating a session to an endpoint. On unsuccessful connection attemps a backoff up to {OpcApplicationConfiguration.OpcSessionCreationBackoffMax} times the specified timeout value is used.\nMin: 1\nDefault: {OpcApplicationConfiguration.OpcSessionCreationTimeout}", (uint u) => {
                                 if (u > 1)
                                 {
-                                    OpcSessionCreationTimeout = u;
+                                    OpcApplicationConfiguration.OpcSessionCreationTimeout = u;
                                 }
                                 else
                                 {
@@ -335,10 +327,10 @@ namespace OpcPublisher
                                 }
                             }
                         },
-                        { "ki|keepaliveinterval=", $"specify the interval in seconds the publisher is sending keep alive messages to the OPC servers on the endpoints it is connected to.\nMin: 2\nDefault: {OpcKeepAliveIntervalInSec}", (int i) => {
+                        { "ki|keepaliveinterval=", $"specify the interval in seconds the publisher is sending keep alive messages to the OPC servers on the endpoints it is connected to.\nMin: 2\nDefault: {OpcApplicationConfiguration.OpcKeepAliveIntervalInSec}", (int i) => {
                                 if (i >= 2)
                                 {
-                                    OpcKeepAliveIntervalInSec = i;
+                                    OpcApplicationConfiguration.OpcKeepAliveIntervalInSec = i;
                                 }
                                 else
                                 {
@@ -346,10 +338,10 @@ namespace OpcPublisher
                                 }
                             }
                         },
-                        { "kt|keepalivethreshold=", $"specify the number of keep alive packets a server can miss, before the session is disconneced\nMin: 1\nDefault: {OpcKeepAliveDisconnectThreshold}", (uint u) => {
+                        { "kt|keepalivethreshold=", $"specify the number of keep alive packets a server can miss, before the session is disconneced\nMin: 1\nDefault: {OpcApplicationConfiguration.OpcKeepAliveDisconnectThreshold}", (uint u) => {
                                 if (u > 1)
                                 {
-                                    OpcKeepAliveDisconnectThreshold = u;
+                                    OpcApplicationConfiguration.OpcKeepAliveDisconnectThreshold = u;
                                 }
                                 else
                                 {
@@ -358,24 +350,24 @@ namespace OpcPublisher
                             }
                         },
 
-                        { "aa|autoaccept", $"the publisher trusts all servers it is establishing a connection to.\nDefault: {AutoAcceptCerts}", b => AutoAcceptCerts = b != null },
+                        { "aa|autoaccept", $"the publisher trusts all servers it is establishing a connection to.\nDefault: {OpcApplicationConfiguration.AutoAcceptCerts}", b => OpcApplicationConfiguration.AutoAcceptCerts = b != null },
 
-                        { "tm|trustmyself=", $"same as trustowncert.\nDefault: {TrustMyself}", (bool b) => TrustMyself = b  },
-                        { "to|trustowncert", $"the publisher certificate is put into the trusted certificate store automatically.\nDefault: {TrustMyself}", t => TrustMyself = t != null  },
+                        { "tm|trustmyself=", $"same as trustowncert.\nDefault: {OpcApplicationConfiguration.TrustMyself}", (bool b) => OpcApplicationConfiguration.TrustMyself = b  },
+                        { "to|trustowncert", $"the publisher certificate is put into the trusted certificate store automatically.\nDefault: {OpcApplicationConfiguration.TrustMyself}", t => OpcApplicationConfiguration.TrustMyself = t != null  },
 
-                        { "fd|fetchdisplayname=", $"same as fetchname.\nDefault: {FetchOpcNodeDisplayName}", (bool b) => FetchOpcNodeDisplayName = IotCentralMode ? true : b },
-                        { "fn|fetchname", $"enable to read the display name of a published node from the server. this will increase the runtime.\nDefault: {FetchOpcNodeDisplayName}", b => FetchOpcNodeDisplayName = IotCentralMode ? true : b != null },
+                        { "fd|fetchdisplayname=", $"same as fetchname.\nDefault: {OpcSession.FetchOpcNodeDisplayName}", (bool b) => OpcSession.FetchOpcNodeDisplayName = HubCommunicationBase.IotCentralMode ? true : b },
+                        { "fn|fetchname", $"enable to read the display name of a published node from the server. this will increase the runtime.\nDefault: {OpcSession.FetchOpcNodeDisplayName}", b => OpcSession.FetchOpcNodeDisplayName = HubCommunicationBase.IotCentralMode ? true : b != null },
 
                         { "ss|suppressedopcstatuscodes=", $"specifies the OPC UA status codes for which no events should be generated.\n" +
-                            $"Default: {SuppressedOpcStatusCodesDefault}", (string s) => opcStatusCodesToSuppress = s },
+                            $"Default: {OpcMonitoredItem.SuppressedOpcStatusCodesDefault}", (string s) => opcStatusCodesToSuppress = s },
 
 
                         // cert store options
-                        { "at|appcertstoretype=", $"the own application cert store type. \n(allowed values: Directory, X509Store)\nDefault: '{OpcOwnCertStoreType}'", (string s) => {
-                                if (s.Equals(X509Store, StringComparison.OrdinalIgnoreCase) || s.Equals(CertificateStoreType.Directory, StringComparison.OrdinalIgnoreCase))
+                        { "at|appcertstoretype=", $"the own application cert store type. \n(allowed values: Directory, X509Store)\nDefault: '{OpcApplicationConfiguration.OpcOwnCertStoreType}'", (string s) => {
+                                if (s.Equals(CertificateStoreType.X509Store, StringComparison.OrdinalIgnoreCase) || s.Equals(CertificateStoreType.Directory, StringComparison.OrdinalIgnoreCase))
                                 {
-                                    OpcOwnCertStoreType = s.Equals(X509Store, StringComparison.OrdinalIgnoreCase) ? X509Store : CertificateStoreType.Directory;
-                                    OpcOwnCertStorePath = s.Equals(X509Store, StringComparison.OrdinalIgnoreCase) ? OpcOwnCertX509StorePathDefault : OpcOwnCertDirectoryStorePathDefault;
+                                    OpcApplicationConfiguration.OpcOwnCertStoreType = s.Equals(CertificateStoreType.X509Store, StringComparison.OrdinalIgnoreCase) ? CertificateStoreType.X509Store : CertificateStoreType.Directory;
+                                    OpcApplicationConfiguration.OpcOwnCertStorePath = s.Equals(CertificateStoreType.X509Store, StringComparison.OrdinalIgnoreCase) ? OpcApplicationConfiguration.OpcOwnCertX509StorePathDefault : OpcApplicationConfiguration.OpcOwnCertDirectoryStorePathDefault;
                                 }
                                 else
                                 {
@@ -384,28 +376,28 @@ namespace OpcPublisher
                             }
                         },
                         { "ap|appcertstorepath=", $"the path where the own application cert should be stored\nDefault (depends on store type):\n" +
-                                $"X509Store: '{OpcOwnCertX509StorePathDefault}'\n" +
-                                $"Directory: '{OpcOwnCertDirectoryStorePathDefault}'", (string s) => OpcOwnCertStorePath = s
+                                $"X509Store: '{OpcApplicationConfiguration.OpcOwnCertX509StorePathDefault}'\n" +
+                                $"Directory: '{OpcApplicationConfiguration.OpcOwnCertDirectoryStorePathDefault}'", (string s) => OpcApplicationConfiguration.OpcOwnCertStorePath = s
                         },
 
-                        { "tp|trustedcertstorepath=", $"the path of the trusted cert store\nDefault: '{OpcTrustedCertDirectoryStorePathDefault}'", (string s) => OpcTrustedCertStorePath = s },
+                        { "tp|trustedcertstorepath=", $"the path of the trusted cert store\nDefault: '{OpcApplicationConfiguration.OpcTrustedCertDirectoryStorePathDefault}'", (string s) => OpcApplicationConfiguration.OpcTrustedCertStorePath = s },
 
-                        { "rp|rejectedcertstorepath=", $"the path of the rejected cert store\nDefault '{OpcRejectedCertDirectoryStorePathDefault}'", (string s) => OpcRejectedCertStorePath = s },
+                        { "rp|rejectedcertstorepath=", $"the path of the rejected cert store\nDefault '{OpcApplicationConfiguration.OpcRejectedCertDirectoryStorePathDefault}'", (string s) => OpcApplicationConfiguration.OpcRejectedCertStorePath = s },
 
-                        { "ip|issuercertstorepath=", $"the path of the trusted issuer cert store\nDefault '{OpcIssuerCertDirectoryStorePathDefault}'", (string s) => OpcIssuerCertStorePath = s },
+                        { "ip|issuercertstorepath=", $"the path of the trusted issuer cert store\nDefault '{OpcApplicationConfiguration.OpcIssuerCertDirectoryStorePathDefault}'", (string s) => OpcApplicationConfiguration.OpcIssuerCertStorePath = s },
 
-                        { "csr", $"show data to create a certificate signing request\nDefault '{ShowCreateSigningRequestInfo}'", c => ShowCreateSigningRequestInfo = c != null },
+                        { "csr", $"show data to create a certificate signing request\nDefault '{OpcApplicationConfiguration.ShowCreateSigningRequestInfo}'", c => OpcApplicationConfiguration.ShowCreateSigningRequestInfo = c != null },
 
                         { "ab|applicationcertbase64=", $"update/set this applications certificate with the certificate passed in as bas64 string", (string s) =>
                             {
-                                NewCertificateBase64String = s;
+                                OpcApplicationConfiguration.NewCertificateBase64String = s;
                             }
                         },
                         { "af|applicationcertfile=", $"update/set this applications certificate with the certificate file specified", (string s) =>
                             {
                                 if (File.Exists(s))
                                 {
-                                    NewCertificateFileName = s;
+                                    OpcApplicationConfiguration.NewCertificateFileName = s;
                                 }
                                 else
                                 {
@@ -416,14 +408,14 @@ namespace OpcPublisher
 
                         { "pb|privatekeybase64=", $"initial provisioning of the application certificate (with a PEM or PFX fomat) requires a private key passed in as base64 string", (string s) =>
                             {
-                                PrivateKeyBase64String = s;
+                                OpcApplicationConfiguration.PrivateKeyBase64String = s;
                             }
                         },
                         { "pk|privatekeyfile=", $"initial provisioning of the application certificate (with a PEM or PFX fomat) requires a private key passed in as file", (string s) =>
                             {
                                 if (File.Exists(s))
                                 {
-                                    PrivateKeyFileName = s;
+                                    OpcApplicationConfiguration.PrivateKeyFileName = s;
                                 }
                                 else
                                 {
@@ -434,42 +426,42 @@ namespace OpcPublisher
 
                         { "cp|certpassword=", $"the optional password for the PEM or PFX or the installed application certificate", (string s) =>
                             {
-                                CertificatePassword = s;
+                                OpcApplicationConfiguration.CertificatePassword = s;
                             }
                         },
 
                         { "tb|addtrustedcertbase64=", $"adds the certificate to the applications trusted cert store passed in as base64 string (multiple strings supported)", (string s) =>
                             {
-                                TrustedCertificateBase64Strings.AddRange(ParseListOfStrings(s));
+                                OpcApplicationConfiguration.TrustedCertificateBase64Strings.AddRange(ParseListOfStrings(s));
                             }
                         },
                         { "tf|addtrustedcertfile=", $"adds the certificate file(s) to the applications trusted cert store passed in as base64 string (multiple filenames supported)", (string s) =>
                             {
-                                TrustedCertificateFileNames.AddRange(ParseListOfFileNames(s, "addtrustedcertfile"));
+                                OpcApplicationConfiguration.TrustedCertificateFileNames.AddRange(ParseListOfFileNames(s, "addtrustedcertfile"));
                             }
                         },
 
                         { "ib|addissuercertbase64=", $"adds the specified issuer certificate to the applications trusted issuer cert store passed in as base64 string (multiple strings supported)", (string s) =>
                             {
-                                IssuerCertificateBase64Strings.AddRange(ParseListOfStrings(s));
+                                OpcApplicationConfiguration.IssuerCertificateBase64Strings.AddRange(ParseListOfStrings(s));
                             }
                         },
                         { "if|addissuercertfile=", $"adds the specified issuer certificate file(s) to the applications trusted issuer cert store (multiple filenames supported)", (string s) =>
                             {
-                                IssuerCertificateFileNames.AddRange(ParseListOfFileNames(s, "addissuercertfile"));
+                                OpcApplicationConfiguration.IssuerCertificateFileNames.AddRange(ParseListOfFileNames(s, "addissuercertfile"));
                             }
                         },
 
                         { "rb|updatecrlbase64=", $"update the CRL passed in as base64 string to the corresponding cert store (trusted or trusted issuer)", (string s) =>
                             {
-                                CrlBase64String = s;
+                                OpcApplicationConfiguration.CrlBase64String = s;
                             }
                         },
                         { "uc|updatecrlfile=", $"update the CRL passed in as file to the corresponding cert store (trusted or trusted issuer)", (string s) =>
                             {
                                 if (File.Exists(s))
                                 {
-                                    CrlFileName = s;
+                                    OpcApplicationConfiguration.CrlFileName = s;
                                 }
                                 else
                                 {
@@ -480,16 +472,16 @@ namespace OpcPublisher
 
                         { "rc|removecert=", $"remove cert(s) with the given thumbprint(s) (multiple thumbprints supported)", (string s) =>
                             {
-                                ThumbprintsToRemove.AddRange(ParseListOfStrings(s));
+                                OpcApplicationConfiguration.ThumbprintsToRemove.AddRange(ParseListOfStrings(s));
                             }
                         },
 
                         // device connection string cert store options
-                        { "dt|devicecertstoretype=", $"the iothub device cert store type. \n(allowed values: Directory, X509Store)\nDefault: {IotDeviceCertStoreType}", (string s) => {
-                                if (s.Equals(X509Store, StringComparison.OrdinalIgnoreCase) || s.Equals(CertificateStoreType.Directory, StringComparison.OrdinalIgnoreCase))
+                        { "dt|devicecertstoretype=", $"the iothub device cert store type. \n(allowed values: Directory, X509Store)\nDefault: {IotHubCommunication.IotDeviceCertStoreType}", (string s) => {
+                                if (s.Equals(CertificateStoreType.X509Store, StringComparison.OrdinalIgnoreCase) || s.Equals(CertificateStoreType.Directory, StringComparison.OrdinalIgnoreCase))
                                 {
-                                    IotDeviceCertStoreType = s.Equals(X509Store, StringComparison.OrdinalIgnoreCase) ? X509Store : CertificateStoreType.Directory;
-                                    IotDeviceCertStorePath = s.Equals(X509Store, StringComparison.OrdinalIgnoreCase) ? IotDeviceCertX509StorePathDefault : IotDeviceCertDirectoryStorePathDefault;
+                                    IotHubCommunication.IotDeviceCertStoreType = s.Equals(CertificateStoreType.X509Store, StringComparison.OrdinalIgnoreCase) ? CertificateStoreType.X509Store : CertificateStoreType.Directory;
+                                    IotHubCommunication.IotDeviceCertStorePath = s.Equals(CertificateStoreType.X509Store, StringComparison.OrdinalIgnoreCase) ? IotHubCommunication.IotDeviceCertX509StorePathDefault : IotHubCommunication.IotDeviceCertDirectoryStorePathDefault;
                                 }
                                 else
                                 {
@@ -498,8 +490,8 @@ namespace OpcPublisher
                             }
                         },
                         { "dp|devicecertstorepath=", $"the path of the iot device cert store\nDefault Default (depends on store type):\n" +
-                                $"X509Store: '{IotDeviceCertX509StorePathDefault}'\n" +
-                                $"Directory: '{IotDeviceCertDirectoryStorePathDefault}'", (string s) => IotDeviceCertStorePath = s
+                                $"X509Store: '{IotHubCommunication.IotDeviceCertX509StorePathDefault}'\n" +
+                                $"Directory: '{IotHubCommunication.IotDeviceCertDirectoryStorePathDefault}'", (string s) => IotHubCommunication.IotDeviceCertStorePath = s
                         },
 
                         // misc
@@ -513,7 +505,7 @@ namespace OpcPublisher
                                 Regex siteNameRegex = new Regex("^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]*[a-zA-Z0-9])\\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\\-]*[A-Za-z0-9])$");
                                 if (siteNameRegex.IsMatch(s))
                                 {
-                                    PublisherSite = s;
+                                    OpcSession.PublisherSite = s;
                                 }
                                 else
                                 {
@@ -522,7 +514,7 @@ namespace OpcPublisher
                             }
                          },
                         { "vc|verboseconsole=", $"ignored, only supported for backward comaptibility.", b => {}},
-                        { "as|autotrustservercerts=", $"same as autoaccept, only supported for backward cmpatibility.\nDefault: {AutoAcceptCerts}", (bool b) => AutoAcceptCerts = b },
+                        { "as|autotrustservercerts=", $"same as autoaccept, only supported for backward cmpatibility.\nDefault: {OpcApplicationConfiguration.AutoAcceptCerts}", (bool b) => OpcApplicationConfiguration.AutoAcceptCerts = b },
                         { "tt|trustedcertstoretype=", $"ignored, only supported for backward compatibility. the trusted cert store will always reside in a directory.", s => { }},
                         { "rt|rejectedcertstoretype=", $"ignored, only supported for backward compatibility. the rejected cert store will always reside in a directory.", s => { }},
                         { "it|issuercertstoretype=", $"ignored, only supported for backward compatibility. the trusted issuer cert store will always reside in a directory.", s => { }},
@@ -545,14 +537,14 @@ namespace OpcPublisher
                         {
                             // convert integers and prefixed hex values
                             statusCodeValue = (uint)new UInt32Converter().ConvertFromInvariantString(statusCodeValueOrName);
-                            SuppressedOpcStatusCodes.Add(statusCodeValue);
+                            OpcMonitoredItem.SuppressedOpcStatusCodes.Add(statusCodeValue);
                         }
                         catch
                         {
                             // convert non prefixed hex values
                             if (uint.TryParse(statusCodeValueOrName, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out statusCodeValue))
                             {
-                                SuppressedOpcStatusCodes.Add(statusCodeValue);
+                                OpcMonitoredItem.SuppressedOpcStatusCodes.Add(statusCodeValue);
                             }
                             else
                             {
@@ -560,7 +552,7 @@ namespace OpcPublisher
                                 statusCodeValue = StatusCodes.GetIdentifier(statusCodeValueOrName);
                                 if (statusCodeValueOrName.Equals("Good", StringComparison.InvariantCulture) || statusCodeValue != 0)
                                 {
-                                    SuppressedOpcStatusCodes.Add(statusCodeValue);
+                                    OpcMonitoredItem.SuppressedOpcStatusCodes.Add(statusCodeValue);
                                 }
                                 else
                                 {
@@ -570,9 +562,9 @@ namespace OpcPublisher
                         }
                     }
                     // filter out duplicate status codes
-                    List<uint> distinctSuppressedOpcStatusCodes = SuppressedOpcStatusCodes.Distinct().ToList();
-                    SuppressedOpcStatusCodes.Clear();
-                    SuppressedOpcStatusCodes.AddRange(distinctSuppressedOpcStatusCodes);
+                    List<uint> distinctSuppressedOpcStatusCodes = OpcMonitoredItem.SuppressedOpcStatusCodes.Distinct().ToList();
+                    OpcMonitoredItem.SuppressedOpcStatusCodes.Clear();
+                    OpcMonitoredItem.SuppressedOpcStatusCodes.AddRange(distinctSuppressedOpcStatusCodes);
                 }
                 catch (OptionException e)
                 {
@@ -605,24 +597,24 @@ namespace OpcPublisher
                 {
                     case 0:
                         {
-                            ApplicationName = Utils.GetHostName();
+                            OpcApplicationConfiguration.ApplicationName = Utils.GetHostName();
                             break;
                         }
                     case 1:
                         {
-                            ApplicationName = extraArgs[APP_NAME_INDEX];
+                            OpcApplicationConfiguration.ApplicationName = extraArgs[APP_NAME_INDEX];
                             break;
                         }
                     case 2:
                         {
-                            ApplicationName = extraArgs[APP_NAME_INDEX];
-                            if (IsIotEdgeModule)
+                            OpcApplicationConfiguration.ApplicationName = extraArgs[APP_NAME_INDEX];
+                            if (IotEdgeHubCommunication.IsIotEdgeModule)
                             {
-                                WriteLine($"Warning: connection string parameter is not supported in IoTEdge context, given parameter is ignored");
+                                Console.WriteLine($"Warning: connection string parameter is not supported in IoTEdge context, given parameter is ignored");
                             }
                             else
                             {
-                                IotHubOwnerConnectionString = extraArgs[CS_INDEX];
+                                IotHubCommunication.IotHubOwnerConnectionString = extraArgs[CS_INDEX];
                             }
                             break;
                         }
@@ -636,7 +628,7 @@ namespace OpcPublisher
                 }
 
                 // install only if requested
-                if (_installOnly)
+                if (AmqpTelemetryCommunication.AmqpTarget == null &&  _installOnly)
                 {
                     // initialize and start IoTHub communication
                     Hub = IotHubCommunication.Instance;
@@ -664,8 +656,8 @@ namespace OpcPublisher
                 }
 
                 // show suppressed status codes
-                Logger.Information($"OPC UA monitored item notifications with one of the following {SuppressedOpcStatusCodes.Count} status codes will not generate telemetry events:");
-                foreach (var suppressedOpcStatusCode in SuppressedOpcStatusCodes)
+                Logger.Information($"OPC UA monitored item notifications with one of the following {OpcMonitoredItem.SuppressedOpcStatusCodes.Count} status codes will not generate telemetry events:");
+                foreach (var suppressedOpcStatusCode in OpcMonitoredItem.SuppressedOpcStatusCodes)
                 {
                     string statusName = StatusCodes.GetBrowseName(suppressedOpcStatusCode);
                     Logger.Information($"StatusCode: {(string.IsNullOrEmpty(statusName) ? "Unknown" : statusName)} (dec: {suppressedOpcStatusCode}, hex: {suppressedOpcStatusCode:X})");
@@ -676,13 +668,13 @@ namespace OpcPublisher
                 await opcApplicationConfiguration.ConfigureAsync().ConfigureAwait(false);
 
                 // log shopfloor site setting
-                if (string.IsNullOrEmpty(PublisherSite))
+                if (string.IsNullOrEmpty(OpcSession.PublisherSite))
                 {
                     Logger.Information("There is no site configured.");
                 }
                 else
                 {
-                    Logger.Information($"Publisher is in site '{PublisherSite}'.");
+                    Logger.Information($"Publisher is in site '{OpcSession.PublisherSite}'.");
                 }
 
                 // start our server interface
@@ -703,16 +695,23 @@ namespace OpcPublisher
                 // initialize the telemetry configuration
                 TelemetryConfiguration = PublisherTelemetryConfiguration.Instance;
 
-                // initialize hub communication
-                if (IsIotEdgeModule)
+                if (AmqpTelemetryCommunication.AmqpTarget != null)
                 {
-                    // initialize and start EdgeHub communication
-                    Hub = IotEdgeHubCommunication.Instance;
+                    Hub = AmqpTelemetryCommunication.Instance;
                 }
                 else
                 {
-                    // initialize and start IoTHub communication
-                    Hub = IotHubCommunication.Instance;
+                    // initialize hub communication
+                    if (IotEdgeHubCommunication.IsIotEdgeModule)
+                    {
+                        // initialize and start EdgeHub communication
+                        Hub = IotEdgeHubCommunication.Instance;
+                    }
+                    else
+                    {
+                        // initialize and start IoTHub communication
+                        Hub = IotHubCommunication.Instance;
+                    }
                 }
 
                 // initialize the node configuration
@@ -844,8 +843,8 @@ namespace OpcPublisher
                     Logger.Information($"There are still {sessionCount} sessions alive. Ignore and continue shutdown.");
                     return;
                 }
-                Logger.Information($"Publisher is shutting down. Wait {SessionConnectWaitSec} seconds, since there are stil {sessionCount} sessions alive...");
-                await Task.Delay(SessionConnectWaitSec * 1000).ConfigureAwait(false);
+                Logger.Information($"Publisher is shutting down. Wait {OpcSession.SessionConnectWaitSec} seconds, since there are stil {sessionCount} sessions alive...");
+                await Task.Delay(OpcSession.SessionConnectWaitSec * 1000).ConfigureAwait(false);
             }
         }
 
@@ -929,28 +928,28 @@ namespace OpcPublisher
             {
                 case "fatal":
                     loggerConfiguration.MinimumLevel.Fatal();
-                    OpcTraceToLoggerFatal = 0;
+                    OpcApplicationConfiguration.OpcTraceToLoggerFatal = 0;
                     break;
                 case "error":
                     loggerConfiguration.MinimumLevel.Error();
-                    OpcStackTraceMask = OpcTraceToLoggerError = Utils.TraceMasks.Error;
+                    OpcApplicationConfiguration.OpcStackTraceMask = OpcApplicationConfiguration.OpcTraceToLoggerError = Utils.TraceMasks.Error;
                     break;
                 case "warn":
                     loggerConfiguration.MinimumLevel.Warning();
-                    OpcTraceToLoggerWarning = 0;
+                    OpcApplicationConfiguration.OpcTraceToLoggerWarning = 0;
                     break;
                 case "info":
                     loggerConfiguration.MinimumLevel.Information();
-                    OpcStackTraceMask = OpcTraceToLoggerInformation = 0;
+                    OpcApplicationConfiguration.OpcStackTraceMask = OpcApplicationConfiguration.OpcTraceToLoggerInformation = 0;
                     break;
                 case "debug":
                     loggerConfiguration.MinimumLevel.Debug();
-                    OpcStackTraceMask = OpcTraceToLoggerDebug = Utils.TraceMasks.StackTrace | Utils.TraceMasks.Operation |
+                    OpcApplicationConfiguration.OpcStackTraceMask = OpcApplicationConfiguration.OpcTraceToLoggerDebug = Utils.TraceMasks.StackTrace | Utils.TraceMasks.Operation |
                         Utils.TraceMasks.StartStop | Utils.TraceMasks.ExternalSystem | Utils.TraceMasks.Security;
                     break;
                 case "verbose":
                     loggerConfiguration.MinimumLevel.Verbose();
-                    OpcStackTraceMask = OpcTraceToLoggerVerbose = Utils.TraceMasks.All;
+                    OpcApplicationConfiguration.OpcStackTraceMask = OpcApplicationConfiguration.OpcTraceToLoggerVerbose = Utils.TraceMasks.All;
                     break;
             }
 
@@ -958,7 +957,7 @@ namespace OpcPublisher
             loggerConfiguration.WriteTo.Console();
 
             // enable remote logging not in any case for perf reasons
-            if (DiagnosticsInterval >= 0)
+            if (PublisherDiagnostics.DiagnosticsInterval >= 0)
             {
                 loggerConfiguration.WriteTo.DiagnosticLogSink();
             }
@@ -1077,6 +1076,6 @@ namespace OpcPublisher
         private static bool _noShutdown = false;
         private static bool _installOnly = false;
         private static TimeSpan _logFileFlushTimeSpanSec = TimeSpan.FromSeconds(30);
-        private static string _hubProtocols = string.Join(", ", Enum.GetNames(IotHubProtocol.GetType()));
+        private static string _hubProtocols = string.Join(", ", Enum.GetNames(IotHubCommunication.IotHubProtocol.GetType()));
     }
 }

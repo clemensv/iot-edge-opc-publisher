@@ -1,80 +1,82 @@
-﻿using System.Threading.Tasks;
-
-namespace OpcPublisher
+﻿namespace OpcPublisher
 {
-    using Microsoft.Azure.Devices.Client;
     using System;
-
+    using System.Threading.Tasks;
+    using Microsoft.Azure.Amqp;
+    using Microsoft.Azure.Amqp.Framing;
+    using Microsoft.Azure.Amqp.Sasl;
+    using Microsoft.Azure.Devices.Client;
 
     /// <summary>
-    /// Class to encapsulate the IoTHub device/module client interface.
+    ///     Class to encapsulate the IoTHub device/module client interface.
     /// </summary>
     public class HubClient : IHubClient, IDisposable
     {
-        /// <summary>
-        /// Stores custom product information that will be appended to the user agent string that is sent to IoT Hub.
-        /// </summary>
-        public string ProductInfo
-        {
-            get
-            {
-                if (_iotHubClient == null)
-                {
-                    return _edgeHubClient.ProductInfo;
-                }
-                return _iotHubClient.ProductInfo;
-            }
-            set
-            {
-                if (_iotHubClient == null)
-                {
-                    _edgeHubClient.ProductInfo = value;
-                }
-                _iotHubClient.ProductInfo = value;
-            }
-        }
+        private readonly AmqpConnectionFactory _amqpClient;
+        private readonly Uri amqpTarget;
+        private readonly string saslPassword;
+        private readonly string saslUser;
+        private AmqpConnection _amqpConnection;
+        private SendingAmqpLink _amqpLink;
+        private AmqpSession _amqpSession;
+        private readonly ModuleClient _edgeHubClient;
+
+        private readonly DeviceClient _iotHubClient;
 
         /// <summary>
-        /// Ctor for the class.
+        ///     Ctor for the class.
         /// </summary>
         public HubClient()
         {
         }
 
         /// <summary>
-        /// Ctor for the class.
+        ///     Ctor for the class.
         /// </summary>
-        public HubClient(DeviceClient iotHubClient)
+        private HubClient(DeviceClient iotHubClient)
         {
             _iotHubClient = iotHubClient;
         }
 
         /// <summary>
-        /// Ctor for the class.
+        ///     Ctor for the class.
         /// </summary>
-        public HubClient(ModuleClient edgeHubClient)
+        private HubClient(ModuleClient edgeHubClient)
         {
             _edgeHubClient = edgeHubClient;
         }
 
-        /// <summary>
-        /// Implement IDisposable.
-        /// </summary>
-        protected virtual void Dispose(bool disposing)
+        private HubClient(AmqpConnectionFactory amqpConnectionFactory, Uri amqpTarget, string saslUser,
+            string saslPassword)
         {
-            if (disposing)
+            _amqpClient = amqpConnectionFactory;
+            this.amqpTarget = amqpTarget;
+            this.saslUser = saslUser;
+            this.saslPassword = saslPassword;
+        }
+
+        /// <summary>
+        ///     Stores custom product information that will be appended to the user agent string that is sent to IoT Hub.
+        /// </summary>
+        public string ProductInfo
+        {
+            get
             {
-                if (_iotHubClient == null)
-                {
-                    _edgeHubClient.Dispose();
-                    return;
-                }
-                _iotHubClient.Dispose();
+                if ( _amqpClient != null ) return "Amqp";
+
+                if (_iotHubClient == null) return _edgeHubClient.ProductInfo;
+                return _iotHubClient.ProductInfo;
+            }
+            set
+            {
+                if (_amqpClient != null) return;
+                if (_iotHubClient == null) _edgeHubClient.ProductInfo = value;
+                _iotHubClient.ProductInfo = value;
             }
         }
 
         /// <summary>
-        /// Implement IDisposable.
+        ///     Implement IDisposable.
         /// </summary>
         public void Dispose()
         {
@@ -84,111 +86,214 @@ namespace OpcPublisher
         }
 
         /// <summary>
-        /// Create DeviceClient from the specified connection string using the specified transport type
+        ///     Close the client instance
         /// </summary>
-        public static IHubClient CreateDeviceClientFromConnectionString(string connectionString, TransportType transportType)
+        public Task CloseAsync()
+        {
+            if (_amqpConnection != null) return _amqpConnection.CloseAsync(TimeSpan.FromSeconds(30));
+            if (_iotHubClient == null) return _edgeHubClient.CloseAsync();
+            return _iotHubClient.CloseAsync();
+        }
+
+        /// <summary>
+        ///     Sets the retry policy used in the operation retries.
+        /// </summary>
+        public void SetRetryPolicy(IRetryPolicy retryPolicy)
+        {
+            if (_edgeHubClient != null)
+            {
+                _edgeHubClient.SetRetryPolicy(retryPolicy);
+                return;
+            }
+
+            if (_iotHubClient != null) _iotHubClient.SetRetryPolicy(retryPolicy);
+        }
+
+        /// <summary>
+        ///     Registers a new delegate for the connection status changed callback. If a delegate is already associated,
+        ///     it will be replaced with the new delegate.
+        /// </summary>
+        public void SetConnectionStatusChangesHandler(ConnectionStatusChangesHandler statusChangesHandler)
+        {
+            if (_edgeHubClient != null)
+            {
+                _edgeHubClient.SetConnectionStatusChangesHandler(statusChangesHandler);
+                return;
+            }
+
+            if (_iotHubClient != null) _iotHubClient.SetConnectionStatusChangesHandler(statusChangesHandler);
+        }
+
+        /// <summary>
+        ///     Explicitly open the DeviceClient instance.
+        /// </summary>
+        public async Task OpenAsync()
+        {
+            if (_amqpClient != null)
+            {
+                _amqpConnection = await _amqpClient.OpenConnectionAsync(new UriBuilder(amqpTarget){Path = ""}.Uri,
+                    new SaslPlainHandler { AuthenticationIdentity = saslUser, Password = saslPassword },
+                    TimeSpan.FromSeconds(30));
+                _amqpSession = _amqpConnection.CreateSession(new AmqpSessionSettings());
+
+                _amqpLink = new SendingAmqpLink(_amqpSession, GetLinkSettings(true, amqpTarget.PathAndQuery, SettleMode.SettleOnSend));
+                
+                return;
+            }
+
+            if (_edgeHubClient != null)
+                await _edgeHubClient.OpenAsync();
+            else if (_iotHubClient != null) await _iotHubClient.OpenAsync();
+        }
+
+        /// <summary>
+        ///     Registers a new delegate for the named method. If a delegate is already associated with
+        ///     the named method, it will be replaced with the new delegate.
+        /// </summary>
+        public Task SetMethodHandlerAsync(string methodName, MethodCallback methodHandler)
+        {
+            if (_amqpClient != null) return Task.CompletedTask;
+            if (_iotHubClient == null)
+                return _edgeHubClient.SetMethodHandlerAsync(methodName, methodHandler, _edgeHubClient);
+            return _iotHubClient.SetMethodHandlerAsync(methodName, methodHandler, _iotHubClient);
+        }
+
+        /// <summary>
+        ///     Registers a new delegate that is called for a method that doesn't have a delegate registered for its name.
+        ///     If a default delegate is already registered it will replace with the new delegate.
+        /// </summary>
+        public Task SetMethodDefaultHandlerAsync(MethodCallback methodHandler)
+        {
+            if (_amqpClient != null) return Task.CompletedTask;
+
+            if (_iotHubClient == null)
+                return _edgeHubClient.SetMethodDefaultHandlerAsync(methodHandler, _edgeHubClient);
+            return _iotHubClient.SetMethodDefaultHandlerAsync(methodHandler, _iotHubClient);
+        }
+
+        /// <summary>
+        ///     Sends an event to device hub
+        /// </summary>
+        public Task SendEventAsync(Message message)
+        {
+            if (_amqpLink != null)
+            {
+                var amqpMessage = AmqpMessage.CreateAmqpStreamMessageBody(message.GetBodyStream());
+                foreach (var messageProperty in message.Properties)
+                {
+                    amqpMessage.ApplicationProperties.Map.Add(messageProperty.Key, messageProperty.Value);
+                }
+
+                amqpMessage.Properties.AbsoluteExpiryTime = message.ExpiryTimeUtc;
+                amqpMessage.Properties.ContentEncoding = message.ContentEncoding;
+                amqpMessage.Properties.ContentType = message.ContentType;
+                amqpMessage.Properties.CorrelationId = message.CorrelationId;
+                amqpMessage.Properties.CreationTime = message.CreationTimeUtc;
+                amqpMessage.Properties.MessageId = message.MessageId;
+                amqpMessage.Properties.To = message.To;
+                
+                
+                return _amqpLink.SendMessageAsync(amqpMessage, AmqpConstants.EmptyBinary, AmqpConstants.EmptyBinary,
+                    TimeSpan.MaxValue);
+            }
+
+            if (_iotHubClient == null) return _edgeHubClient.SendEventAsync(message);
+            return _iotHubClient.SendEventAsync(message);
+        }
+
+        /// <summary>
+        ///     Implement IDisposable.
+        /// </summary>
+        protected virtual void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (_amqpConnection != null)
+                {
+                    _amqpConnection.Close();
+                    _amqpConnection = null;
+                    return;
+                }
+
+                if (_iotHubClient == null)
+                {
+                    _edgeHubClient.Dispose();
+                    return;
+                }
+
+                _iotHubClient.Dispose();
+            }
+        }
+
+
+        /// <summary>
+        ///     Create DeviceClient from the specified connection string using the specified transport type
+        /// </summary>
+        public static IHubClient CreateDeviceClientFromConnectionString(string connectionString,
+            TransportType transportType)
         {
             return new HubClient(DeviceClient.CreateFromConnectionString(connectionString, transportType));
         }
 
         /// <summary>
-        /// Create ModuleClient from the specified connection string using the specified transport type
+        ///     Create ModuleClient from the specified connection string using the specified transport type
         /// </summary>
         public static IHubClient CreateModuleClientFromEnvironment(TransportType transportType)
         {
             return new HubClient(ModuleClient.CreateFromEnvironmentAsync(transportType).Result);
         }
 
-        /// <summary>
-        /// Close the client instance
-        /// </summary>
-        public Task CloseAsync()
+
+        public static IHubClient CreateAmqpSender(Uri amqpTarget, string saslUser, string saslPassword)
         {
-            if (_iotHubClient == null)
-            {
-                return _edgeHubClient.CloseAsync();
-            }
-            return _iotHubClient.CloseAsync();
+            var amqpConnectionFactory = new AmqpConnectionFactory();
+            return new HubClient(amqpConnectionFactory, amqpTarget, saslUser, saslPassword);
         }
 
-        /// <summary>
-        /// Sets the retry policy used in the operation retries.
-        /// </summary>
-        public void SetRetryPolicy(IRetryPolicy retryPolicy)
-        {
-            if (_iotHubClient == null)
-            {
-                _edgeHubClient.SetRetryPolicy(retryPolicy);
-                return;
-            }
-            _iotHubClient.SetRetryPolicy(retryPolicy);
-        }
+        public static AmqpLinkSettings GetLinkSettings(bool forSender, string address, SettleMode settleType,
+            int credit = 0, bool dynamic = false)
 
-        /// <summary>
-        /// Registers a new delegate for the connection status changed callback. If a delegate is already associated, 
-        /// it will be replaced with the new delegate.
-        /// </summary>
-        public void SetConnectionStatusChangesHandler(ConnectionStatusChangesHandler statusChangesHandler)
         {
-            if (_iotHubClient == null)
-            {
-                _edgeHubClient.SetConnectionStatusChangesHandler(statusChangesHandler);
-                return;
-            }
-            _iotHubClient.SetConnectionStatusChangesHandler(statusChangesHandler);
-        }
+            AmqpLinkSettings settings = null;
+            // create a setting for sender
 
-        /// <summary>
-        /// Explicitly open the DeviceClient instance.
-        /// </summary>
-        public Task OpenAsync()
-        {
-            if (_iotHubClient == null)
-            {
-                return _edgeHubClient.OpenAsync();
-            }
-            return _iotHubClient.OpenAsync();
-        }
+            settings = new AmqpLinkSettings();
+            settings.LinkName = string.Format("link-{0}", Guid.NewGuid().ToString("N"));
+            settings.Role = !forSender;
+ 
+            Target target = new Target();
+            target.Address = address;
 
-        /// <summary>
-        /// Registers a new delegate for the named method. If a delegate is already associated with
-        /// the named method, it will be replaced with the new delegate.
-        /// </summary>
-        public Task SetMethodHandlerAsync(string methodName, MethodCallback methodHandler)
-        {
-            if (_iotHubClient == null)
-            {
-                return _edgeHubClient.SetMethodHandlerAsync(methodName, methodHandler, _edgeHubClient);
-            }
-            return _iotHubClient.SetMethodHandlerAsync(methodName, methodHandler, _iotHubClient);
-        }
+            Source source = new Source();
+            source.Address = address;
 
-        /// <summary>
-        /// Registers a new delegate that is called for a method that doesn't have a delegate registered for its name. 
-        /// If a default delegate is already registered it will replace with the new delegate.
-        /// </summary>
-        public Task SetMethodDefaultHandlerAsync(MethodCallback methodHandler)
-        {
-            if (_iotHubClient == null)
-            {
-                return _edgeHubClient.SetMethodDefaultHandlerAsync(methodHandler, _edgeHubClient);
-            }
-            return _iotHubClient.SetMethodDefaultHandlerAsync(methodHandler, _iotHubClient);
-        }
+            source.DistributionMode = "move";
+            settings.Source = source;
+            settings.Target = target;
 
-        /// <summary>
-        /// Sends an event to device hub
-        /// </summary>
-        public Task SendEventAsync(Message message)
-        {
-            if (_iotHubClient == null)
-            {
-                return _edgeHubClient.SendEventAsync(message);
-            }
-            return _iotHubClient.SendEventAsync(message);
-        }
+            settings.SettleType = settleType;
 
-        private static DeviceClient _iotHubClient;
-        private static ModuleClient _edgeHubClient;
+            if (!forSender)
+            {
+                settings.TotalLinkCredit = (uint)credit;
+                settings.AutoSendFlow = credit > 0;
+                if (dynamic)
+                {
+                    source.Address = null;
+                    source.Dynamic = true;
+                }
+            }
+            else
+            {
+                settings.InitialDeliveryCount = 0;
+                if (dynamic)
+                {
+                    target.Address = null;
+                    target.Dynamic = true;
+                }
+            }
+            settings.AddProperty("x-opt-just-testing", "ignore me");
+            return settings;
+        }
     }
 }
