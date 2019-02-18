@@ -1,8 +1,10 @@
 ﻿namespace OpcPublisher
 {
     using System;
+    using System.IO;
     using System.Threading.Tasks;
     using Microsoft.Azure.Amqp;
+    using Microsoft.Azure.Amqp.Encoding;
     using Microsoft.Azure.Amqp.Framing;
     using Microsoft.Azure.Amqp.Sasl;
     using Microsoft.Azure.Devices.Client;
@@ -62,7 +64,7 @@
         {
             get
             {
-                if ( _amqpClient != null ) return "Amqp";
+                if (_amqpClient != null) return "Amqp";
 
                 if (_iotHubClient == null) return _edgeHubClient.ProductInfo;
                 return _iotHubClient.ProductInfo;
@@ -131,13 +133,13 @@
         {
             if (_amqpClient != null)
             {
-                _amqpConnection = await _amqpClient.OpenConnectionAsync(new UriBuilder(amqpTarget){Path = ""}.Uri,
+                _amqpConnection = await _amqpClient.OpenConnectionAsync(new UriBuilder(amqpTarget) { Path = "" }.Uri,
                     new SaslPlainHandler { AuthenticationIdentity = saslUser, Password = saslPassword },
                     TimeSpan.FromSeconds(30));
                 _amqpSession = _amqpConnection.CreateSession(new AmqpSessionSettings());
-
-                _amqpLink = new SendingAmqpLink(_amqpSession, GetLinkSettings(true, amqpTarget.PathAndQuery, SettleMode.SettleOnSend));
-                
+                await _amqpSession.OpenAsync(TimeSpan.FromSeconds(30));
+                _amqpLink = new SendingAmqpLink(_amqpSession, GetLinkSettings(true, amqpTarget.PathAndQuery.Substring(1), SettleMode.SettleOnSend));
+                await _amqpLink.OpenAsync(TimeSpan.FromSeconds(30));
                 return;
             }
 
@@ -174,31 +176,51 @@
         /// <summary>
         ///     Sends an event to device hub
         /// </summary>
-        public Task SendEventAsync(Message message)
+        public async Task SendEventAsync(Message message)
         {
-            if (_amqpLink != null)
+            try
             {
-                var amqpMessage = AmqpMessage.CreateAmqpStreamMessageBody(message.GetBodyStream());
-                foreach (var messageProperty in message.Properties)
+                if (_amqpLink != null)
                 {
-                    amqpMessage.ApplicationProperties.Map.Add(messageProperty.Key, messageProperty.Value);
+                    ((MemoryStream) message.BodyStream).Position = 0;
+
+
+                    BinaryReader br = new BinaryReader(message.BodyStream);
+                    var buf = br.ReadBytes((int) message.BodyStream.Length);
+                    var amqpMessage = AmqpMessage.Create(new AmqpValue() {Value = buf});
+                    foreach (var messageProperty in message.Properties)
+                    {
+                        amqpMessage.ApplicationProperties.Map.Add(messageProperty.Key, messageProperty.Value);
+                    }
+
+
+                    amqpMessage.Properties.AbsoluteExpiryTime = DateTime.UtcNow.AddHours(2); //(DateTime?)message.ExpiryTimeUtc;
+                    //amqpMessage.Properties.ContentEncoding = new AmqpSymbol(message.ContentEncoding);
+                    //amqpMessage.Properties.ContentType = new AmqpSymbol(message.ContentType);
+                    //amqpMessage.Properties.CorrelationId = MessageId.(message.CorrelationId);
+                    // amqpMessage.Properties.CreationTime = message.CreationTimeUtc;
+                    //amqpMessage.Properties.MessageId = new AmqpSymbol(message.MessageId);
+                    //amqpMessage.Properties.To = message.To;
+
+
+                    var outcome = await _amqpLink.SendMessageAsync(amqpMessage, AmqpConstants.EmptyBinary,
+                        AmqpConstants.EmptyBinary,
+                        TimeSpan.MaxValue);
+                    if (outcome.DescriptorCode != Accepted.Code)
+                    {
+                        throw new InvalidOperationException((string) outcome.Value);
+                    }
+
+                    return;
                 }
 
-                amqpMessage.Properties.AbsoluteExpiryTime = message.ExpiryTimeUtc;
-                amqpMessage.Properties.ContentEncoding = message.ContentEncoding;
-                amqpMessage.Properties.ContentType = message.ContentType;
-                amqpMessage.Properties.CorrelationId = message.CorrelationId;
-                amqpMessage.Properties.CreationTime = message.CreationTimeUtc;
-                amqpMessage.Properties.MessageId = message.MessageId;
-                amqpMessage.Properties.To = message.To;
-                
-                
-                return _amqpLink.SendMessageAsync(amqpMessage, AmqpConstants.EmptyBinary, AmqpConstants.EmptyBinary,
-                    TimeSpan.MaxValue);
+                if (_iotHubClient == null) await _edgeHubClient.SendEventAsync(message);
+                await _iotHubClient.SendEventAsync(message);
             }
-
-            if (_iotHubClient == null) return _edgeHubClient.SendEventAsync(message);
-            return _iotHubClient.SendEventAsync(message);
+            catch (Exception e)
+            {
+                throw;
+            }
         }
 
         /// <summary>
@@ -260,7 +282,7 @@
             settings = new AmqpLinkSettings();
             settings.LinkName = string.Format("link-{0}", Guid.NewGuid().ToString("N"));
             settings.Role = !forSender;
- 
+
             Target target = new Target();
             target.Address = address;
 
